@@ -122,10 +122,11 @@ marketRows.addEventListener('click', event => {
   if (!coin) return;
 
   if (button.dataset.marketAction === 'watch') {
-    watch = watch.includes(coin.id)
+    const nextWatch = watch.includes(coin.id)
       ? watch.filter(id => id !== coin.id)
       : [...watch, coin.id];
-    save('cx_watch', watch);
+    if (!save('cx_watch', nextWatch)) return;
+    watch = nextWatch;
     renderMarket();
     return;
   }
@@ -138,11 +139,12 @@ marketRows.addEventListener('click', event => {
   }
 
   if (button.dataset.marketAction === 'collect') {
-    collection.unshift({
+    const nextCollection = [{
       name: coin.name,
       notes: 'Added from the Market Exchange demo catalog; not a valuation.'
-    });
-    save('cx_collection', collection);
+    }, ...collection];
+    if (!save('cx_collection', nextCollection)) return;
+    collection = nextCollection;
     renderCollection();
     toast('Added to your local vault');
   }
@@ -215,11 +217,12 @@ document.getElementById('identify').onclick = () => {
 
 document.getElementById('saveDiscovered').onclick = () => {
   if (!chosen) return;
-  collection.unshift({
+  const nextCollection = [{
     name: chosen.name,
     notes: `Added from the discovery guide · identification unverified. ${chosen.details}`
-  });
-  save('cx_collection', collection);
+  }, ...collection];
+  if (!save('cx_collection', nextCollection)) return;
+  collection = nextCollection;
   renderCollection();
   toast('Saved to your local vault');
 };
