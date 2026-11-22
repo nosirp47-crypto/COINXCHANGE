@@ -122,6 +122,10 @@ marketRows.addEventListener('click', event => {
   if (!coin) return;
 
   if (button.dataset.marketAction === 'watch') {
+    if (window.coinxchangeAccounts?.configured) {
+      void window.coinxchangeAccounts.toggleWatch(coin.id);
+      return;
+    }
     const nextWatch = watch.includes(coin.id)
       ? watch.filter(id => id !== coin.id)
       : [...watch, coin.id];
@@ -139,6 +143,14 @@ marketRows.addEventListener('click', event => {
   }
 
   if (button.dataset.marketAction === 'collect') {
+    if (window.coinxchangeAccounts?.configured) {
+      void window.coinxchangeAccounts.addCoin({
+        name: coin.name,
+        notes: 'Added from the reference catalog; not a valuation.',
+        referenceId: coin.id
+      });
+      return;
+    }
     const nextCollection = [{
       name: coin.name,
       notes: 'Added from the Market Exchange demo catalog; not a valuation.'
@@ -217,6 +229,14 @@ document.getElementById('identify').onclick = () => {
 
 document.getElementById('saveDiscovered').onclick = () => {
   if (!chosen) return;
+  if (window.coinxchangeAccounts?.configured) {
+    void window.coinxchangeAccounts.addCoin({
+      name: chosen.name,
+      notes: 'Added from the discovery guide; identification unverified. ' + chosen.details,
+      referenceId: chosen.id
+    });
+    return;
+  }
   const nextCollection = [{
     name: chosen.name,
     notes: `Added from the discovery guide · identification unverified. ${chosen.details}`

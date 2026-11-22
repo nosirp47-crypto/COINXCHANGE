@@ -3,11 +3,17 @@
   "private": true,
   "scripts": {
     "test": "playwright test",
-    "test:a11y": "playwright test --grep @a11y"
+    "test:a11y": "playwright test --grep @a11y",
+    "build:accounts": "node scripts/build-accounts.mjs",
+    "test:accounts": "playwright test tests/accounts.spec.js",
+    "test:database": "node scripts/test-database.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
-    "@playwright/test": "^1.65.1"
+    "@electric-sql/pglite": "0.5.17",
+    "@playwright/test": "^1.65.1",
+    "@supabase/supabase-js": "2.119.2",
+    "esbuild": "0.28.2"
   },
   "type": "module"
 }

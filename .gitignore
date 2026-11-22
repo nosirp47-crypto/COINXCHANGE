@@ -2,3 +2,7 @@ node_modules/
 playwright-report/
 test-results/
 blob-report/
+.env
+.env.*
+!.env.example
+/COINXCHANGE-phase3-accounts.bundle

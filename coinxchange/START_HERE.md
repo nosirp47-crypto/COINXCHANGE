@@ -23,4 +23,14 @@ Not functional yet: AI image recognition, live coin valuation, real user login o
 ## What you need to launch a real company
 Choose and clear the brand name; buy a domain; set up a legal entity and developer accounts as appropriate; select a development team/stack; implement production backend, secure accounts, moderation and licensed market data; test with beta users; then add monetization and verified trading after compliance review.
 
+## Phase 3 account code (configuration required)
+
+This branch now includes email signup/sign-in, email confirmation handling, password recovery, a private display-name profile, and an account-backed vault and watchlist. The default `account-config.js` is empty, so the demonstration behavior above remains active until a real backend is configured.
+
+Follow `docs/ACCOUNTS_SETUP.md` in the repository to create the Supabase project, apply the database migration, configure email and callback URLs, and add only the public project URL and publishable/anon key. Hosted authentication has not been activated merely by adding this code.
+
+When configured, browsing remains available to guests. Vault and watchlist changes require sign-in; existing guest records stay on the same device and are not automatically uploaded or erased. Community discussions remain local demonstrations. Passkeys, shared social publishing, photo storage, and payments are later work.
+
+The maintained member experience is in `coinxchange/index.html`. For Cloudflare Pages, publish the `coinxchange` directory. The repository-root `index.html` remains the earlier prototype.
+
 © 2026 Johnathan L. Hill. All rights reserved. See OWNERSHIP_NOTICE.md.

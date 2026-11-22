@@ -1,0 +1,44 @@
+name: Verify accounts and existing website
+
+on:
+  push:
+    branches: [phase3/accounts-db]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Verify reproducible browser bundle
+        run: |
+          npm run build:accounts
+          git diff --exit-code -- coinxchange/vendor
+      - name: Check database ownership and permissions
+        run: npm run test:database
+      - name: Install test browsers
+        run: npx playwright install --with-deps chromium webkit
+      - name: Test accounts and guest website
+        run: npm test -- --workers=2 --reporter=list,html
+      - name: Save test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coinxchange-test-report
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
