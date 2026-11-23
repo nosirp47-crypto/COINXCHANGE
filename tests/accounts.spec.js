@@ -221,7 +221,7 @@ async function signIn(page) {
 }
 
 async function goTo(page, name) {
-  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name, exact: true }).click();
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name }).click();
 }
 
 test.describe('COINXCHANGE account and private-data integration', () => {
