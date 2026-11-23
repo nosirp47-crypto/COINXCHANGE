@@ -6,7 +6,13 @@ const appPaths = ['/', '/coinxchange/'];
 for (const appPath of appPaths) {
   test.describe(`COINXCHANGE at ${appPath}`, () => {
     test.beforeEach(async ({ page }) => {
-      await page.goto(appPath);
+await page.route('**/coinxchange/account-config.js', route =>
+  route.fulfill({
+    contentType: 'application/javascript',
+    body: "window.COINXCHANGE_CONFIG = Object.freeze({ supabaseUrl: '', supabasePublishableKey: '' });"
+  })
+);
+await page.goto(appPath);
       if (appPath === '/coinxchange/') {
         await page.getByRole('button', { name: 'Explore Coins', exact: true }).click();
       }
