@@ -526,11 +526,24 @@ async function startAccounts({ url, key }) {
         }
         return;
       }
-      // The SDK emits PASSWORD_RECOVERY. The shared listener verifies the
-      // session with getUser before enabling the password form.
-      await currentSessionTask;
-      if (!result.data.session || !user || !recovery || user.id !== result.data.session.user.id) {
+      // verifyOtp(recovery) can emit SIGNED_IN rather than PASSWORD_RECOVERY.
+      // Do not rely on the event name to authorize a password change: accept
+      // only a freshly verified Supabase recovery session and check getUser().
+      const session = result.data?.session;
+      if (!session?.user?.id || result.data?.user?.id !== session.user.id) {
         status(form, 'Could not confirm the recovery session. Request another email.', true);
+        return;
+      }
+      callbackFailed = false;
+      recovery = true;
+      recoveryUserId = session.user.id;
+      const epoch = ++generation;
+      clearPrivateView();
+      await acceptSession(session, epoch, 'PASSWORD_RECOVERY');
+      if (epoch !== generation || !user || user.id !== recoveryUserId) {
+        recovery = false;
+        recoveryUserId = null;
+        status(form, 'Could not verify your account. Request another recovery email.', true);
       }
     });
     submit('resetPasswordForm', async form => {
