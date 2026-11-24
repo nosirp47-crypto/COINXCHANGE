@@ -117,6 +117,7 @@ async function startAccounts({ url, key }) {
   // Keep this listener synchronous. All provider calls happen after it returns.
   client.auth.onAuthStateChange((event, session) => {
     if (event === 'PASSWORD_RECOVERY' && session) {
+      callbackFailed = false;
       recovery = true;
       recoveryUserId = session.user.id;
     }
@@ -157,7 +158,7 @@ async function startAccounts({ url, key }) {
     else {
       history.replaceState(null, '', pageUrl);
       window.go('forgot-password');
-      status(byId('recoveryForm'), 'This account link is invalid, expired, or was opened in a different browser. Request a new link and open it in this browser.', true);
+      status(byId('recoveryForm'), 'This account link is invalid, expired, or was opened in a different browser. Enter the code from your email, or request a new email.', true);
     }
   }
 
@@ -408,7 +409,7 @@ async function startAccounts({ url, key }) {
   }
 
   function enablePublicForms() {
-    for (const id of ['signInForm', 'createAccountForm', 'recoveryForm']) {
+    for (const id of ['signInForm', 'createAccountForm', 'recoveryForm', 'otpRecoveryForm']) {
       if (!pendingForms.has(id)) {
         byId(id).querySelectorAll('input, button[type="submit"]').forEach(node => { node.disabled = false; });
       }
@@ -504,7 +505,33 @@ async function startAccounts({ url, key }) {
         showAuthError(result.error, form, 'A reset email could not be requested. Please try again later.');
         return;
       }
-      status(form, 'If an account exists for this address, a reset link will be sent. Open it in this browser to choose a new password.');
+      status(form, 'If an account exists for this address, a recovery email will arrive. Enter its code on any device, or open its link in this browser.');
+    });
+    // Six-digit recovery codes are verified by Supabase, never by client logic.
+    // Requires the Supabase Recovery email template to include {{ .Token }}.
+    submit('otpRecoveryForm', async form => {
+      const email = byId('recoveryEmail').value.trim();
+      const token = byId('recoveryCode').value.trim();
+      if (!email || !/^[0-9]{6}$/.test(token)) {
+        status(form, 'Enter your account email above and the six-digit code from your recovery email.', true);
+        return;
+      }
+      const result = await client.auth.verifyOtp({ email, token, type: 'recovery' });
+      byId('recoveryCode').value = '';
+      if (result.error) {
+        if (result.error.code === 'otp_expired') {
+          status(form, 'That code is invalid or expired. Request a new recovery email.', true);
+        } else {
+          showAuthError(result.error, form, 'Could not verify the code. Try again.');
+        }
+        return;
+      }
+      // The SDK emits PASSWORD_RECOVERY. The shared listener verifies the
+      // session with getUser before enabling the password form.
+      await currentSessionTask;
+      if (!result.data.session || !user || !recovery || user.id !== result.data.session.user.id) {
+        status(form, 'Could not confirm the recovery session. Request another email.', true);
+      }
     });
     submit('resetPasswordForm', async form => {
       if (!user || !recovery || user.id !== recoveryUserId || callbackFailed) {
@@ -588,7 +615,7 @@ async function startAccounts({ url, key }) {
         'Create Account', 'Create an account for a private collection and watchlist. Community posts are still a local demonstration.'],
       ['forgotPasswordPanel', 'recoveryForm',
         '<label for="recoveryEmail">Email address</label><input id="recoveryEmail" class="field" type="email" autocomplete="email" maxlength="254" required disabled>',
-        'Send reset link', 'Request a link to choose a new password.']
+        'Send recovery email', 'Request an email, or enter a code you already received.']
     ];
     forms.forEach(([panelId, formId, fields, label, copy]) => {
       const panel = byId(panelId);
@@ -600,6 +627,14 @@ async function startAccounts({ url, key }) {
         '</button><p class="account-status tiny" role="status" aria-live="polite"></p>';
       panel.querySelector('.phase-account-links').before(form);
     });
+    // This optional code form does not replace the existing reset-link flow.
+    byId('recoveryForm').insertAdjacentHTML('afterend',
+      '<form id="otpRecoveryForm"><p class="tiny">If your recovery email includes a six-digit code, enter it here. You can use the code on another device.</p>' +
+      '<label for="recoveryCode">Six-digit email code</label>' +
+      '<input id="recoveryCode" class="field" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="recoveryCodeHelp" disabled>' +
+      '<p id="recoveryCodeHelp" class="tiny">Use the email address entered above. Codes expire and can only be used once.</p>' +
+      '<button class="btn secondary" type="submit" disabled>Verify code</button>' +
+      '<p class="account-status tiny" role="status" aria-live="polite"></p></form>');
     byId('forgotPasswordPanel').querySelector(':scope > p:not(.phase-eyebrow)').textContent = 'We will help you recover access to your account.';
     const reset = document.createElement('section');
     reset.id = 'resetPasswordPanel';

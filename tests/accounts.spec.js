@@ -63,7 +63,7 @@ function deferred() {
 
 // This fixture exercises the real browser SDK against HTTP responses. It does
 // not emulate database authorization; supabase/tests covers actual SQL/RLS.
-async function providerFixture(page, { config, seedGuest = true } = {}) {
+async function providerFixture(page, { config, seedGuest = true, recoveryMail = {} } = {}) {
   const state = {
     requests: [],
     profile: { id: userId, display_name: 'Test Collector', created_at: timestamp, updated_at: timestamp },
@@ -123,10 +123,18 @@ async function providerFixture(page, { config, seedGuest = true } = {}) {
       }
       return respond(session());
     }
+    if (url.pathname === '/auth/v1/verify') {
+      if (body?.type !== 'recovery' || !recoveryMail.code || body?.token !== recoveryMail.code || body?.email !== email) {
+        return authError('Invalid or expired code', 'otp_expired');
+      }
+      delete recoveryMail.code;
+      return respond(session());
+    }
     if (url.pathname === '/auth/v1/signup') {
       return respond(user({ email_confirmed_at: undefined, confirmation_sent_at: timestamp }));
     }
     if (url.pathname === '/auth/v1/recover') {
+      if (!state.failRecovery && body?.email === email) recoveryMail.code = '123456';
       return state.failRecovery
         ? authError('Too many requests. Please try again later.', 'over_email_send_rate_limit', 429)
         : respond({});
@@ -382,8 +390,8 @@ test.describe('COINXCHANGE account and private-data integration', () => {
     await page.getByRole('link', { name: 'Forgot Password?' }).click();
     await expect(page.locator('#recoveryEmail')).toBeEnabled();
     await page.locator('#recoveryEmail').fill(email);
-    await page.locator('#recoveryForm').getByRole('button', { name: 'Send reset link', exact: true }).click();
-    await expect(page.locator('#forgotPasswordPanel .account-status')).toContainText(/email|link/i);
+    await page.locator('#recoveryForm').getByRole('button', { name: 'Send recovery email', exact: true }).click();
+    await expect(page.locator('#recoveryForm .account-status')).toContainText(/email|link/i);
     const recover = provider.requests.find(request => request.path === '/auth/v1/recover');
     expect(recover.body.email).toBe(email);
     expect(recover.body.code_challenge).toBeTruthy();
@@ -404,6 +412,51 @@ test.describe('COINXCHANGE account and private-data integration', () => {
     await expectGuestDataUnchanged(page);
   });
 
+  test('a recovery email requested in one browser profile resets the password in another', async ({ page, browser, baseURL }) => {
+    const recoveryMail = {};
+    const requester = await browser.newPage({ baseURL });
+    try {
+      await providerFixture(requester, { recoveryMail });
+      await requester.goto(appPath);
+      await requester.evaluate(() => window.go('forgot-password'));
+      await requester.locator('#recoveryEmail').fill(email);
+      await requester.locator('#recoveryForm button[type="submit"]').click();
+      await expect(requester.locator('#recoveryForm .account-status')).toContainText(/email will arrive/i);
+    } finally {
+      await requester.close();
+    }
+    const provider = await providerFixture(page, { recoveryMail });
+    await page.goto(appPath);
+    await page.locator('#welcomeScreen').getByRole('button', { name: 'Sign In', exact: true }).click();
+    await page.getByRole('link', { name: 'Forgot Password?' }).click();
+    await page.locator('#recoveryEmail').fill(email);
+    await page.locator('#recoveryCode').fill(recoveryMail.code);
+    await page.locator('#otpRecoveryForm').getByRole('button', { name: 'Verify code' }).click();
+    await expect(page.locator('#resetPasswordPanel')).toBeVisible();
+    await expect(page.locator('#newPassword')).toBeEnabled();
+    await page.locator('#newPassword').fill('Updated-Collection-2026!');
+    await page.locator('#confirmNewPassword').fill('Updated-Collection-2026!');
+    await page.locator('#resetPasswordForm button[type="submit"]').click();
+    await expect(page.locator('#resetPasswordForm .account-status')).toContainText(/password updated/i);
+    expect(provider.requests.some(req => req.method === 'PUT' && req.path === '/auth/v1/user' && req.body.password === 'Updated-Collection-2026!')).toBe(true);
+    expect(provider.requests.some(req => req.path === '/auth/v1/verify' && req.body?.type === 'recovery')).toBe(true);
+    await expectGuestDataUnchanged(page);
+  });
+
+  test('an invalid email code cannot unlock a password change', async ({ page }) => {
+    const provider = await providerFixture(page);
+    await page.goto(appPath);
+    await page.locator('#welcomeScreen').getByRole('button', { name: 'Sign In', exact: true }).click();
+    await page.getByRole('link', { name: 'Forgot Password?' }).click();
+    await page.locator('#recoveryEmail').fill(email);
+    await page.locator('#recoveryCode').fill('000000');
+    await page.locator('#otpRecoveryForm').getByRole('button', { name: 'Verify code' }).click();
+    await expect(page.locator('#otpRecoveryForm .account-status')).toContainText(/invalid|expired/i);
+    await expect(page.locator('#newPassword')).toBeDisabled();
+    expect(provider.requests.filter(req => req.path === '/auth/v1/user' && req.method === 'PUT')).toEqual([]);
+    await expectGuestDataUnchanged(page);
+  });
+
   test('an expired recovery link shows a failure and cannot update a password', async ({ page }) => {
     const provider = await providerFixture(page);
     await page.goto(appPath);
@@ -411,12 +464,12 @@ test.describe('COINXCHANGE account and private-data integration', () => {
     await page.getByRole('link', { name: 'Forgot Password?' }).click();
     await expect(page.locator('#recoveryEmail')).toBeEnabled();
     await page.locator('#recoveryEmail').fill(email);
-    await page.locator('#recoveryForm').getByRole('button', { name: 'Send reset link', exact: true }).click();
-    await expect(page.locator('#forgotPasswordPanel .account-status')).toContainText(/email|link/i);
+    await page.locator('#recoveryForm').getByRole('button', { name: 'Send recovery email', exact: true }).click();
+    await expect(page.locator('#recoveryForm .account-status')).toContainText(/email|link/i);
     provider.failExchange = true;
 
     await page.goto(`${appPath}?account=recovery&code=expired-code`);
-    await expect(page.locator('#accountScreen .account-status:visible')).toContainText(/expired|invalid|could not|unable|new.*link/i);
+    await expect(page.locator('#recoveryForm .account-status')).toContainText(/expired|invalid|could not|unable|new.*link/i);
     await expect(page.locator('#newPassword')).toBeDisabled();
     expect(provider.requests.filter(request => request.path === '/auth/v1/user' && request.method === 'PUT')).toEqual([]);
     await expectGuestDataUnchanged(page);
@@ -430,12 +483,12 @@ test.describe('COINXCHANGE account and private-data integration', () => {
     await page.evaluate(() => window.go('forgot-password'));
     await expect(page.locator('#recoveryEmail')).toBeEnabled();
     await page.locator('#recoveryEmail').fill(email);
-    await page.locator('#recoveryForm').getByRole('button', { name: 'Send reset link', exact: true }).click();
-    await expect(page.locator('#forgotPasswordPanel .account-status')).toContainText(/email|link/i);
+    await page.locator('#recoveryForm').getByRole('button', { name: 'Send recovery email', exact: true }).click();
+    await expect(page.locator('#recoveryForm .account-status')).toContainText(/email|link/i);
     provider.failExchange = true;
 
     await page.goto(`${appPath}?account=recovery&code=expired-while-signed-in`);
-    await expect(page.locator('#accountScreen .account-status:visible')).toContainText(/expired|invalid|could not|unable|new.*link/i);
+    await expect(page.locator('#recoveryForm .account-status')).toContainText(/expired|invalid|could not|unable|new.*link/i);
     await expect(page.locator('#newPassword')).toBeDisabled();
     await expect(page.locator('#confirmNewPassword')).toBeDisabled();
     expect(provider.requests.some(request => request.path === '/auth/v1/token' && request.search.includes('grant_type=pkce'))).toBe(true);

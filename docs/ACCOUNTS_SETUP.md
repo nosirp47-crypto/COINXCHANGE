@@ -39,7 +39,23 @@ Under Auth URL Configuration, set the **Site URL** to the exact directory that s
 
 Use the row that matches the deployment actually being tested. If the hostname, preview deployment, or publish directory changes, enter the new exact URLs. Only add origins you control. This batch computes callbacks from the currently loaded app directory and does not accept a user-supplied redirect destination.
 
-The client uses the PKCE authentication flow. Open confirmation and recovery links in the **same browser profile that requested them**, where the temporary verifier is stored. If a link is opened on a different device/browser, request a new link from the browser you want to use. An expired or already-used link must produce an error and a new-link path, not a successful password-change message. Supabase explains the [PKCE browser requirement](https://supabase.com/docs/guides/auth/sessions/pkce-flow) and [password recovery flow](https://supabase.com/docs/guides/auth/passwords).
+The client uses the PKCE authentication flow. Open confirmation and recovery links in the **same browser profile that requested them**, where the temporary verifier is stored. On another browser or device, open Forgot Password and enter the email address and recovery code. If only a link was delivered, request another email from the browser you intend to use. An expired or already-used link must produce an error and a new-link path, not a successful password-change message. Supabase explains the [PKCE browser requirement](https://supabase.com/docs/guides/auth/sessions/pkce-flow) and [password recovery flow](https://supabase.com/docs/guides/auth/passwords).
+
+### Optional six-digit recovery codes (mobile / cross-browser)
+
+The Phase 3 app also accepts a six-digit recovery code directly on the Forgot Password screen. The browser sends the account email, code and `type: 'recovery'` to Supabase `verifyOtp`; only a Supabase-verified recovery session can unlock the new-password form. Existing email-link recovery remains available.
+
+**Required before real-world use:** configure the Supabase **Reset Password / Recovery** email template to visibly include the one-time `{{ .Token }}` code. The default email contains a link but not necessarily a visible code. For reliable public delivery, configure and test a trusted SMTP provider; SMTP credentials stay server-side. Do not advertise code-only recovery as operational until SMTP, template, delivery, expiry, rate limits and mobile end-to-end tests have been verified. Never place SMTP credentials or secret API keys in browser code.
+
+For a staging project using six-digit codes, set the Recovery email body to the following and disable email-provider link tracking. Send a fresh recovery email after saving the template.
+
+```html
+<p>Your COINXCHANGE password recovery code is <strong>{{ .Token }}</strong>.</p>
+<p>On any device, open COINXCHANGE, select Forgot Password, and enter your email and this code.</p>
+<p>Or use the browser where you made the request and <a href="{{ .ConfirmationURL }}">reset your password</a>.</p>
+```
+
+The six-digit code is sensitive, single-use, and must not be logged, copied into screenshots or stored in the collection database. Codes from a different user or an expired email must not authorize password changes. Keep the app on a stable HTTPS origin; a Codespace URL is not a production recovery destination.
 
 ### Email delivery before inviting people
 
@@ -101,7 +117,7 @@ Use two dedicated test member accounts, in separate browser profiles:
 2. Sign in, change the display name, save a coin with notes, and add/remove a watchlist reference. Reload and sign in again to verify persistence.
 3. Sign in as the second member. Confirm the first member's private profile, coins, and watchlist are absent. Attempt a database API request with the first member's known item ID while authenticated as the second member; it must not return or modify the item.
 4. Sign out and confirm private content disappears immediately. Switch accounts without refreshing and confirm no private content leaks from the previous session. Confirm a failed or expired session does not fall back to writing private data into guest storage.
-5. Request a recovery link, open it in the requesting browser, set a new password, and confirm the new password works. Check expired/used links and a different-browser link failure.
+5. Request a recovery link, open it in the requesting browser, set a new password, and confirm the new password works. In a fresh browser profile on a second device, enter the emailed code, change the password, and verify the new password works. Check wrong, expired and reused codes, and different-browser PKCE link failure.
 6. Interrupt the network during a save. Confirm the app reports failure and retains the user's typed input without claiming success. Restore the connection and retry.
 7. Verify the welcome, account, profile, collection, and watchlist screens on an iPad and phone. Run the repository's automated tests as an additional check.
 
