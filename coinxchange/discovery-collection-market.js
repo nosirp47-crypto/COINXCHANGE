@@ -247,5 +247,186 @@ document.getElementById('saveDiscovered').onclick = () => {
   toast('Saved to your local vault');
 };
 
+
+/* Founder Edition beta enhancements: free-text research, a clear save path,
+   native sharing, and a neutral advertising placement. No third-party scripts. */
+const discoveryCard = document.getElementById('coinSelect').closest('.card');
+const researchPanel = document.createElement('div');
+researchPanel.className = 'coin-research-panel';
+researchPanel.innerHTML = `
+  <h3>Can't find your coin in the examples?</h3>
+  <label for="customCoinName">Enter any coin name, year, mintmark, or country</label>
+  <input id="customCoinName" class="field" type="search" maxlength="160"
+    placeholder="e.g. 1896-O Morgan silver dollar" autocomplete="off">
+  <div class="actions">
+    <button class="btn secondary" id="researchCoin" type="button">Research this coin</button>
+    <button class="btn secondary" id="saveCustomCoin" type="button">Save to my vault</button>
+  </div>
+  <p id="customCoinStatus" class="tiny" role="status" aria-live="polite"></p>
+  <div id="coinReferenceLinks" class="coin-reference-links" hidden>
+    <a id="pcgsResearch" href="#" target="_blank" rel="noopener noreferrer">Search PCGS CoinFacts</a>
+    <a id="ngcResearch" href="#" target="_blank" rel="noopener noreferrer">Search NGC</a>
+    <a id="numistaResearch" href="#" target="_blank" rel="noopener noreferrer">Search Numista</a>
+  </div>
+  <p class="tiny">External research searches are not AI photo identification, certified appraisals,
+  or verified coin matches. Check the date, mintmark, denomination and variety.</p>
+`;
+discoveryCard.append(researchPanel);
+const customName = document.getElementById('customCoinName');
+const customStatus = document.getElementById('customCoinStatus');
+const linkPanel = document.getElementById('coinReferenceLinks');
+const researchTerms = name => encodeURIComponent(name + ' coin identification');
+document.getElementById('researchCoin').addEventListener('click', () => {
+  const name = customName.value.trim();
+  if (!name) { customStatus.textContent = 'Enter a coin description first.'; return; }
+  document.getElementById('pcgsResearch').href = 'https://www.google.com/search?q=' +
+    researchTerms('site:pcgs.com/coinfacts ' + name);
+  document.getElementById('ngcResearch').href = 'https://www.google.com/search?q=' +
+    researchTerms('site:ngccoin.com ' + name);
+  document.getElementById('numistaResearch').href = 'https://www.google.com/search?q=' +
+    researchTerms('site:en.numista.com ' + name);
+  linkPanel.hidden = false;
+  customStatus.textContent = 'Choose a reference source to review possible matches; no identification has been confirmed.';
+});
+document.getElementById('saveCustomCoin').addEventListener('click', async () => {
+  const name = customName.value.trim();
+  if (!name) { customStatus.textContent = 'Enter a coin name before saving.'; return; }
+  if (window.coinxchangeAccounts?.configured) {
+    const saved = await window.coinxchangeAccounts.addCoin({
+      name, notes: 'User-entered coin; identity and condition not verified.'
+    });
+    if (saved) { customStatus.textContent = 'Saved to your account vault.'; go('collection'); }
+    else customStatus.textContent = 'Not saved. Sign in and ensure your account storage is available.';
+    return;
+  }
+  const next = [{ name, notes: 'User-entered coin; identification not verified.' }, ...collection];
+  if (!save('cx_collection', next)) { customStatus.textContent = 'Could not save on this device.'; return; }
+  collection = next;
+  renderCollection();
+  customStatus.textContent = 'Saved locally to My Coin Collection.';
+  go('collection');
+});
+
+// An image preview is not a cloud upload. Offer an explicit path to save its
+// description rather than implying the image itself has been stored.
+const imageSaveHelp = document.createElement('div');
+imageSaveHelp.className = 'coin-photo-save';
+imageSaveHelp.innerHTML = `
+  <h3>Save the coin you photographed</h3>
+  <label for="photoCoinName">Coin name or description</label>
+  <input id="photoCoinName" class="field" maxlength="160" placeholder="e.g. 1979-D Lincoln cent">
+  <button id="savePhotoDescription" class="btn secondary" type="button">Save coin details to My Collection</button>
+  <p id="photoSaveStatus" class="tiny" role="status" aria-live="polite"></p>
+  <p class="tiny">This saves the coin description, not the photograph.
+  Permanent photo uploads are not enabled yet.</p>
+`;
+photoInput.closest('.upload').after(imageSaveHelp);
+document.getElementById('savePhotoDescription').addEventListener('click', async () => {
+  const name = document.getElementById('photoCoinName').value.trim();
+  const state = document.getElementById('photoSaveStatus');
+  if (!name) { state.textContent = 'Enter a coin description to save.'; return; }
+  const notes = 'Added from photo-preview screen. Photo not uploaded; identity unverified.';
+  if (window.coinxchangeAccounts?.configured) {
+    const saved = await window.coinxchangeAccounts.addCoin({ name, notes });
+    if (saved) { state.textContent = 'Saved to your account collection.'; go('collection'); }
+    else state.textContent = 'Not saved. Sign in and check account storage.';
+    return;
+  }
+  if (!save('cx_collection', [{ name, notes }, ...collection])) {
+    state.textContent = 'Could not save on this device.'; return;
+  }
+  collection = [{ name, notes }, ...collection];
+  renderCollection();
+  state.textContent = 'Saved locally.';
+  go('collection');
+});
+
+async function shareCoinxchange(title, text) {
+  const url = new URL(location.pathname, location.origin).href;
+  if (navigator.share) {
+    try { await navigator.share({ title, text, url }); return; }
+    catch (error) { if (error?.name === 'AbortError') return; }
+  }
+  const message = title + '\\n' + text + '\\n' + url;
+  try {
+    await navigator.clipboard.writeText(message);
+    toast('Share text copied. Paste it where you like.');
+  } catch {
+    toast('Sharing is unavailable in this browser.');
+  }
+}
+const shareControls = document.createElement('div');
+shareControls.className = 'actions';
+shareControls.innerHTML = '<button class="btn secondary" id="shareDiscovery" type="button">Share coin</button>' +
+  '<button class="btn secondary" id="tagDiscovery" type="button">Add hashtags</button>';
+document.getElementById('saveDiscovered').after(shareControls);
+document.getElementById('shareDiscovery').addEventListener('click', () => {
+  if (!chosen) return toast('Select a coin to share first.');
+  void shareCoinxchange('COINXCHANGE coin research', chosen.name + ' — identification is unverified.');
+});
+document.getElementById('tagDiscovery').addEventListener('click', () => {
+  if (!chosen) return toast('Select a coin first.');
+  const tags = '#CoinCollecting #Numismatics #' + chosen.name.replace(/[^a-zA-Z0-9]/g, '').slice(0,45);
+  if (navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText(tags).then(() => toast('Coin hashtags copied.'))
+      .catch(() => toast('Could not copy hashtags on this device.'));
+  } else toast(tags);
+});
+const socialArea = document.getElementById('social');
+const tagPost = document.createElement('button');
+tagPost.type = 'button';
+tagPost.className = 'btn secondary';
+tagPost.textContent = 'Insert #CoinCollecting';
+document.getElementById('publish').after(tagPost);
+tagPost.onclick = () => {
+  const field = document.getElementById('postText');
+  const addition = (field.value.trim() ? ' ' : '') + '#CoinCollecting';
+  if (field.value.length + addition.length <= field.maxLength) field.value += addition;
+  field.focus();
+};
+for (const feedId of ['socialFeed', 'homeFeed']) {
+  document.getElementById(feedId).addEventListener('click', event => {
+    const post = event.target.closest('.feedpost');
+    if (!post || !event.target.matches('[data-cx-share]')) return;
+    const body = post.querySelector('.postbody')?.textContent || '';
+    void shareCoinxchange('COINXCHANGE collector discussion', body);
+  });
+}
+const sharePostButton = document.createElement('button');
+sharePostButton.type = 'button';
+sharePostButton.dataset.cxShare = 'true';
+sharePostButton.textContent = 'Share';
+const originalFeed = window.renderAll;
+const shareObserver = new MutationObserver(() => {
+  for (const feedId of ['socialFeed','homeFeed']) {
+    const feed = document.getElementById(feedId);
+    feed.querySelectorAll('.feedpost .postactions').forEach(actions => {
+      if (!actions.querySelector('[data-cx-share]')) actions.append(sharePostButton.cloneNode(true));
+    });
+  }
+});
+shareObserver.observe(document.getElementById('socialFeed'), { childList: true });
+shareObserver.observe(document.getElementById('homeFeed'), { childList: true });
+// Populate share buttons on the initial feed as well.
+for (const feedId of ['socialFeed','homeFeed']) {
+  document.getElementById(feedId).querySelectorAll('.feedpost .postactions')
+    .forEach(actions => actions.append(sharePostButton.cloneNode(true)));
+}
+
+const adSlot = document.createElement('aside');
+adSlot.id = 'coinxchangeAdSlot';
+adSlot.setAttribute('aria-label', 'Advertisement placement');
+adSlot.innerHTML = '<span class="tiny">ADVERTISEMENT SPACE</span>' +
+  '<p>Collector-friendly sponsors and promotions may appear here in a future release.</p>' +
+  '<span class="tiny">No paid ads or tracking are active.</span>';
+document.getElementById('home').querySelector('.hero').after(adSlot);
+const styles = document.createElement('style');
+styles.textContent = '.coin-research-panel,.coin-photo-save{margin-top:20px;padding-top:14px;border-top:1px solid var(--line)}' +
+ '.coin-research-panel label,.coin-photo-save label{display:block;margin:8px 0}' +
+ '.coin-reference-links{display:flex;flex-wrap:wrap;gap:12px;margin:10px 0}' +
+ '#coinxchangeAdSlot{border:1px dashed var(--line);border-radius:14px;margin:18px 0;padding:14px 20px;text-align:center;background:var(--panel)}' +
+ '#coinxchangeAdSlot p{margin:6px 0}';
+document.head.append(styles);
+
 renderMarket();
 })();
