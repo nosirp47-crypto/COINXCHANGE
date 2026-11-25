@@ -1,4 +1,6 @@
+// COINXCHANGE Cloudflare visual staging preview only.
+// No real member login or uploads; preserve production Supabase data.
 window.COINXCHANGE_CONFIG = Object.freeze({
-  supabaseUrl: 'https://xjwjacihfrnslivolaml.supabase.co',
-  supabasePublishableKey: 'sb_publishable_UUufq5a23en6iD3bvs7VsQ_T4ILQKtr'
+  supabaseUrl: '',
+  supabasePublishableKey: ''
 });
