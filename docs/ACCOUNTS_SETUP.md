@@ -34,20 +34,20 @@ Under Auth URL Configuration, set the **Site URL** to the exact directory that s
 
 | Hosting layout | App directory / Site URL | Additional recovery redirect |
 | --- | --- | --- |
-| Cloudflare Pages publishes the `coinxchange` folder | `https://coinxchange-private-beta.pages.dev/` | `https://coinxchange-private-beta.pages.dev/?account=recovery` |
+| Existing Cloudflare staging origin, after the account build is deployed | `https://coinxchange-staging.pages.dev/` | `https://coinxchange-staging.pages.dev/?account=recovery` |
 | GitHub Pages publishes the repository root | `https://nosirp47-crypto.github.io/COINXCHANGE/coinxchange/` | `https://nosirp47-crypto.github.io/COINXCHANGE/coinxchange/?account=recovery` |
 
 Use the row that matches the deployment actually being tested. If the hostname, preview deployment, or publish directory changes, enter the new exact URLs. Only add origins you control. This batch computes callbacks from the currently loaded app directory and does not accept a user-supplied redirect destination.
 
 The client uses the PKCE authentication flow. Open confirmation and recovery links in the **same browser profile that requested them**, where the temporary verifier is stored. On another browser or device, open Forgot Password and enter the email address and recovery code. If only a link was delivered, request another email from the browser you intend to use. An expired or already-used link must produce an error and a new-link path, not a successful password-change message. Supabase explains the [PKCE browser requirement](https://supabase.com/docs/guides/auth/sessions/pkce-flow) and [password recovery flow](https://supabase.com/docs/guides/auth/passwords).
 
-### Optional six-digit recovery codes (mobile / cross-browser)
+### Confirmation and recovery codes (mobile / cross-browser)
 
-The Phase 3 app also accepts a six-digit recovery code directly on the Forgot Password screen. The browser sends the account email, code and `type: 'recovery'` to Supabase `verifyOtp`; only a Supabase-verified recovery session can unlock the new-password form. Existing email-link recovery remains available.
+The app accepts numeric email codes of 6–10 digits, preserving leading zeros. On **Forgot Password**, it sends the account email, code and `type: 'recovery'` to Supabase `verifyOtp`; only a fresh, verified recovery session can unlock the new-password form. On **Create Account → Already have a confirmation code?**, it verifies a confirmation code with `type: 'signup'`. Signup confirmation never enables a password reset. Both flows verify the returned identity with `getUser()` before displaying private account data. Existing same-browser email-link flows remain available.
 
 **Required before real-world use:** configure the Supabase **Reset Password / Recovery** email template to visibly include the one-time `{{ .Token }}` code. The default email contains a link but not necessarily a visible code. For reliable public delivery, configure and test a trusted SMTP provider; SMTP credentials stay server-side. Do not advertise code-only recovery as operational until SMTP, template, delivery, expiry, rate limits and mobile end-to-end tests have been verified. Never place SMTP credentials or secret API keys in browser code.
 
-For a staging project using six-digit codes, set the Recovery email body to the following and disable email-provider link tracking. Send a fresh recovery email after saving the template.
+Copy [the recovery email template](../supabase/templates/recovery.html) into **Authentication → Emails → Reset password** and [the confirmation email template](../supabase/templates/confirmation.html) into **Confirm signup** in the staging project. The files include the provider-generated code and preserve the confirmation link. Disable email-provider link tracking. Existing emails are unchanged; request a fresh email after saving the template. The essential recovery code template field is:
 
 ```html
 <p>Your COINXCHANGE password recovery code is <strong>{{ .Token }}</strong>.</p>
@@ -55,7 +55,7 @@ For a staging project using six-digit codes, set the Recovery email body to the 
 <p>Or use the browser where you made the request and <a href="{{ .ConfirmationURL }}">reset your password</a>.</p>
 ```
 
-The six-digit code is sensitive, single-use, and must not be logged, copied into screenshots or stored in the collection database. Codes from a different user or an expired email must not authorize password changes. Keep the app on a stable HTTPS origin; a Codespace URL is not a production recovery destination.
+The email code is sensitive, single-use, and must not be logged, copied into screenshots or stored in the collection database. Codes from a different user or an expired email must not authorize password changes. Keep the app on a stable HTTPS origin; a Codespace URL is not a production recovery destination.
 
 ### Email delivery before inviting people
 

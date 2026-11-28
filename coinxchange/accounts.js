@@ -50,13 +50,19 @@ if (config && bridge) {
 
 async function startAccounts({ url, key }) {
   let client;
+  let photoStore;
+  let founderDashboard;
   let user = null;
   let items = [];
   let tracked = [];
   let generation = 0;
   let loaded = false;
   let operationBusy = false;
+  let accountLoad = null;
   let signingOut = false;
+  let authIntent = 0;
+  const authRequests = new Set();
+  const authFormIds = new Set(['signInForm', 'createAccountForm', 'confirmEmailForm', 'recoveryForm', 'otpRecoveryForm', 'resetPasswordForm']);
   let editingId = null;
   const recoveryRequested = new URL(location.href).searchParams.get('account') === 'recovery';
   let recovery = false;
@@ -107,15 +113,24 @@ async function startAccounts({ url, key }) {
   };
 
   restoreGuest();
-  const { createClient } = await import('./vendor/supabase.js');
+  const [{ createClient }, { createPhotoStore }, { createFounderDashboard }] = await Promise.all([
+    import('./vendor/supabase.js'),
+    import('./collection-photos.js'),
+    import('./founder-dashboard.js')
+  ]);
   client = createClient(url, key, {
     auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
     global: { fetch: fetchWithTimeout }
   });
+  photoStore = createPhotoStore(client);
+  founderDashboard = createFounderDashboard(client);
   attachForms();
 
   // Keep this listener synchronous. All provider calls happen after it returns.
   client.auth.onAuthStateChange((event, session) => {
+    // A late verification can persist and publish a session before its promise
+    // resolves. Explicit sign-out owns the UI until all earlier requests settle.
+    if (signingOut) return;
     if (event === 'PASSWORD_RECOVERY' && session) {
       callbackFailed = false;
       recovery = true;
@@ -125,7 +140,6 @@ async function startAccounts({ url, key }) {
       recovery = false;
       recoveryUserId = null;
     }
-    if (signingOut && session) return;
     if (session && user?.id === session.user.id && loaded &&
         !['PASSWORD_RECOVERY', 'USER_UPDATED'].includes(event)) return;
     const epoch = ++generation;
@@ -185,11 +199,15 @@ async function startAccounts({ url, key }) {
   }
 
   function clearPrivateView() {
+    photoStore?.clear();
+    founderDashboard?.clear();
+    window.coinxchangeClearPhotoDraft?.();
     user = null;
     items = [];
     tracked = [];
     loaded = false;
     operationBusy = false;
+    accountLoad = null;
     resetCoinEditor();
     bridge.showData([], []);
     byId('profileName').value = '';
@@ -244,47 +262,63 @@ async function startAccounts({ url, key }) {
     }
   }
 
-  async function loadAccount(epoch = generation) {
-    if (!user) return;
+  function loadAccount(epoch = generation) {
+    if (!user || epoch !== generation) return Promise.resolve();
+    const owner = user.id;
+    // Session restoration and Retry can request the same account together.
+    // Share one load so competing photo hydration cannot revoke newer URLs.
+    if (accountLoad?.generation === epoch && accountLoad.owner === owner) return accountLoad.promise;
     if (operationBusy || pendingForms.get('profileForm')?.generation === generation) {
       status(byId('profileForm'), 'Please wait for the current save to finish, then retry.');
-      return;
+      return Promise.resolve();
     }
-    const owner = user.id;
+    const ticket = { generation: epoch, owner, promise: null };
+    accountLoad = ticket;
+    founderDashboard?.clear();
     loaded = false;
     byId('profileForm').querySelector('button').disabled = true;
-    try {
-      const [profile, collectionResult, watchResult] = await Promise.all([
-        client.from('profiles').select('id,display_name').eq('id', owner).single(),
-        allRows('collection_items', 'id,owner_id,name,notes,reference_id,created_at', owner),
-        allRows('watchlist_items', 'owner_id,reference_id,created_at', owner)
-      ]);
-      if (epoch !== generation || user?.id !== owner) return;
-      if (profile.error) throw profile.error;
-      if (!profile.data || profile.data.id !== owner) throw new Error('Profile unavailable.');
-      if (collectionResult.some(row => row.owner_id !== owner) || watchResult.some(row => row.owner_id !== owner)) {
-        throw new Error('Unexpected owner in account response.');
+    ticket.promise = (async () => {
+      try {
+        const [profile, collectionResult, watchResult] = await Promise.all([
+          client.from('profiles').select('id,display_name').eq('id', owner).single(),
+          allRows('collection_items', 'id,owner_id,name,notes,reference_id,photo_path,created_at', owner),
+          allRows('watchlist_items', 'owner_id,reference_id,created_at', owner)
+        ]);
+        if (epoch !== generation || user?.id !== owner) return;
+        if (profile.error) throw profile.error;
+        if (!profile.data || profile.data.id !== owner) throw new Error('Profile unavailable.');
+        if (collectionResult.some(row => row.owner_id !== owner) || watchResult.some(row => row.owner_id !== owner)) {
+          throw new Error('Unexpected owner in account response.');
+        }
+        const hydrated = await photoStore.hydrate(collectionResult, owner);
+        if (epoch !== generation || user?.id !== owner) return;
+        items = hydrated;
+        tracked = watchResult.map(row => row.reference_id);
+        byId('profileName').value = profile.data.display_name;
+        byId('profileForm').querySelector('button').disabled = false;
+        loaded = true;
+        bridge.showData(items, tracked);
+        byId('accountState').textContent = 'Signed in · private account storage';
+        byId('vaultStorageNotice').textContent = items.some(item => item.photoUnavailable)
+          ? 'Your coins are saved to your account. A photo could not be loaded; use Retry in My Account to try again.'
+          : 'Your private collection and photos are saved to your account and available when you sign in on another device.';
+        byId('homeStorageLabel').textContent = 'Saved to your account';
+        status(byId('profileForm'), '');
+        void founderDashboard.load();
+      } catch {
+        if (epoch !== generation || user?.id !== owner) return;
+        loaded = false;
+        items = [];
+        tracked = [];
+        bridge.showData([], []);
+        byId('accountState').textContent = 'Signed in · account storage unavailable';
+        byId('vaultStorageNotice').textContent = 'We could not load your account collection. Nothing was changed. Use Retry in My Account.';
+        status(byId('profileForm'), 'Could not load your profile or saved coins. Please retry.', true);
+      } finally {
+        if (accountLoad === ticket) accountLoad = null;
       }
-      items = collectionResult;
-      tracked = watchResult.map(row => row.reference_id);
-      byId('profileName').value = profile.data.display_name;
-      byId('profileForm').querySelector('button').disabled = false;
-      loaded = true;
-      bridge.showData(items, tracked);
-      byId('accountState').textContent = 'Signed in · private account storage';
-      byId('vaultStorageNotice').textContent = 'Your private collection is saved to your account and available when you sign in on another device.';
-      byId('homeStorageLabel').textContent = 'Saved to your account';
-      status(byId('profileForm'), '');
-    } catch {
-      if (epoch !== generation || user?.id !== owner) return;
-      loaded = false;
-      items = [];
-      tracked = [];
-      bridge.showData([], []);
-      byId('accountState').textContent = 'Signed in · account storage unavailable';
-      byId('vaultStorageNotice').textContent = 'We could not load your account collection. Nothing was changed. Use Retry in My Account.';
-      status(byId('profileForm'), 'Could not load your profile or saved coins. Please retry.', true);
-    }
+    })();
+    return ticket.promise;
   }
 
   async function allRows(table, columns, owner) {
@@ -321,10 +355,11 @@ async function startAccounts({ url, key }) {
     const epoch = generation;
     operationBusy = true;
     try {
-      const result = await work(owner);
+      const result = await work(owner, epoch);
       if (epoch !== generation || user?.id !== owner) return false;
       if (result.error) throw result.error;
-      success(result.data);
+      await success(result.data, owner, epoch);
+      if (epoch !== generation || user?.id !== owner) return false;
       bridge.showData(items, tracked);
       return true;
     } catch {
@@ -347,14 +382,28 @@ async function startAccounts({ url, key }) {
     }
     const edit = options.fromForm ? editingId : null;
     const changes = { name, notes, reference_id: coin.referenceId || null };
-    const ok = await mutate(owner => edit
-      ? client.from('collection_items').update({ name, notes }).eq('owner_id', owner).eq('id', edit)
-        .select('id,owner_id,name,notes,reference_id,created_at').single()
-      : client.from('collection_items').insert({ ...changes, owner_id: owner })
-        .select('id,owner_id,name,notes,reference_id,created_at').single(),
-    row => {
-      if (!row || row.owner_id !== user.id) throw new Error('Unexpected saved coin.');
-      items = edit ? items.map(item => item.id === edit ? row : item) : [row, ...items];
+    const columns = 'id,owner_id,name,notes,reference_id,photo_path,created_at';
+    const ok = await mutate(async (owner, epoch) => {
+      if (edit) {
+        // Editing the text must preserve the existing private photo reference.
+        return client.from('collection_items').update({ name, notes }).eq('owner_id', owner).eq('id', edit)
+          .select(columns).single();
+      }
+      const photoPath = coin.photoDataUrl ? await photoStore.upload(owner, coin.photoDataUrl) : null;
+      if (epoch !== generation || user?.id !== owner) throw new Error('Account changed during upload.');
+      const result = await client.from('collection_items').insert({ ...changes, owner_id: owner, photo_path: photoPath })
+        .select(columns).single();
+      // A timeout can follow a committed insert. Keep the image in that case;
+      // remove an unused upload only after a definite database rejection.
+      if (photoPath && result.error && [400, 401, 403, 404, 409, 422].includes(result.status)) {
+        try { await photoStore.remove(photoPath, owner); } catch { /* Private orphan can be reconciled later. */ }
+      }
+      return result;
+    }, async (row, owner, epoch) => {
+      if (!row || row.owner_id !== owner) throw new Error('Unexpected saved coin.');
+      const next = edit ? items.map(item => item.id === edit ? row : item) : [row, ...items];
+      const hydrated = await photoStore.hydrate(next, owner);
+      if (epoch === generation && user?.id === owner) items = hydrated;
     });
     if (ok) {
       if (options.fromForm) resetCoinEditor();
@@ -365,14 +414,24 @@ async function startAccounts({ url, key }) {
 
   async function removeCoin(id) {
     if (!requireAccount() || !id) return false;
+    let photoCleanupFailed = false;
     const ok = await mutate(owner => client.from('collection_items').delete()
-      .eq('owner_id', owner).eq('id', id).select('id').single(),
-    row => {
+      .eq('owner_id', owner).eq('id', id).select('id,photo_path').single(),
+    async (row, owner, epoch) => {
       if (!row || row.id !== id) throw new Error('Coin removal was not confirmed.');
-      items = items.filter(item => item.id !== id);
+      if (row.photo_path) {
+        try { await photoStore.remove(row.photo_path, owner); }
+        catch { photoCleanupFailed = true; }
+      }
+      if (epoch !== generation || user?.id !== owner) return;
+      const hydrated = await photoStore.hydrate(items.filter(item => item.id !== id), owner);
+      if (epoch !== generation || user?.id !== owner) return;
+      items = hydrated;
       if (editingId === id) resetCoinEditor();
     });
-    if (ok) bridge.toast('Removed from your account vault.');
+    if (ok) bridge.toast(photoCleanupFailed
+      ? 'Coin removed. Its private photo could not be deleted yet.'
+      : 'Removed from your account vault.');
     return ok;
   }
 
@@ -409,10 +468,27 @@ async function startAccounts({ url, key }) {
   }
 
   function enablePublicForms() {
-    for (const id of ['signInForm', 'createAccountForm', 'recoveryForm', 'otpRecoveryForm']) {
+    if (signingOut) return;
+    for (const id of ['signInForm', 'createAccountForm', 'recoveryForm', 'otpRecoveryForm', 'confirmEmailForm']) {
       if (!pendingForms.has(id)) {
         byId(id).querySelectorAll('input, button[type="submit"]').forEach(node => { node.disabled = false; });
       }
+    }
+  }
+
+  async function authRequest(work) {
+    if (signingOut) return null;
+    const intent = authIntent;
+    const request = Promise.resolve().then(work);
+    authRequests.add(request);
+    try {
+      const result = await request;
+      return signingOut || intent !== authIntent ? null : result;
+    } catch (error) {
+      if (signingOut || intent !== authIntent) return null;
+      throw error;
+    } finally {
+      authRequests.delete(request);
     }
   }
 
@@ -426,6 +502,10 @@ async function startAccounts({ url, key }) {
         status(form, 'Please wait for sign-out to finish, then try again.');
         return;
       }
+      if (authFormIds.has(formId) && authRequests.size) {
+        status(form, 'Please wait for the current account request to finish, then try again.');
+        return;
+      }
       const ticket = { generation };
       pendingForms.set(formId, ticket);
       const controls = Array.from(form.querySelectorAll('input, button[type="submit"]'));
@@ -434,12 +514,12 @@ async function startAccounts({ url, key }) {
       try {
         await action(form);
       } catch {
-        status(form, 'The request could not be completed. Check your connection and try again.', true);
+        if (!signingOut) status(form, 'The request could not be completed. Check your connection and try again.', true);
       } finally {
         if (pendingForms.get(formId) === ticket) {
           pendingForms.delete(formId);
           controls.forEach(node => {
-            node.disabled = (formId === 'resetPasswordForm' && (!user || !recovery || user.id !== recoveryUserId || callbackFailed)) ||
+            node.disabled = signingOut || (formId === 'resetPasswordForm' && (!user || !recovery || user.id !== recoveryUserId || callbackFailed)) ||
               (formId === 'profileForm' && (!user || !loaded));
           });
         }
@@ -454,8 +534,9 @@ async function startAccounts({ url, key }) {
       callbackFailed = false;
       const email = byId('signInEmail').value.trim();
       const password = byId('signInPassword').value;
-      const result = await client.auth.signInWithPassword({ email, password });
+      const result = await authRequest(() => client.auth.signInWithPassword({ email, password }));
       byId('signInPassword').value = '';
+      if (!result) return;
       if (result.error) {
         showAuthError(result.error, form, 'Sign-in failed. Check your email and password, then try again.');
         return;
@@ -481,43 +562,80 @@ async function startAccounts({ url, key }) {
         status(form, 'Enter a display name.', true);
         return;
       }
-      const result = await client.auth.signUp({
+      const result = await authRequest(() => client.auth.signUp({
         email, password,
         options: { data: { display_name: displayName }, emailRedirectTo: pageUrl }
-      });
+      }));
       byId('createPassword').value = '';
+      if (!result) return;
       if (result.error) {
         showAuthError(result.error, form, 'Account creation could not be completed. Please try again later.');
         return;
       }
       if (!result.data.session) {
-        status(form, 'If this address can be registered, check your email to confirm your account. Open the link in this browser. If you already have an account, sign in or reset your password.');
+        byId('confirmEmailDetails').open = true;
+        byId('confirmEmailAddress').value = email;
+        status(form, 'If this address can be registered, check your email for confirmation instructions. Enter its code below, or open its link in this browser. If you already have an account, sign in or reset your password.');
         return;
       }
       await currentSessionTask;
       if (user) window.go('member');
     });
+    submit('confirmEmailForm', async form => {
+      const email = byId('confirmEmailAddress').value.trim();
+      const token = byId('confirmEmailCode').value.trim();
+      byId('confirmEmailCode').value = '';
+      recovery = false;
+      recoveryUserId = null;
+      const result = await authRequest(() => client.auth.verifyOtp({ email, token, type: 'signup' }));
+      if (!result) return;
+      if (result.error) {
+        if (result.error.code === 'otp_expired') {
+          status(form, 'That code is invalid or expired. Use the code from your most recent confirmation email.', true);
+        } else {
+          showAuthError(result.error, form, 'Could not confirm your email. Please try again.');
+        }
+        return;
+      }
+      const session = result.data?.session;
+      if (!session?.user?.id || result.data?.user?.id !== session.user.id) {
+        status(form, 'Could not confirm this account session. Please try signing in.', true);
+        return;
+      }
+      callbackFailed = false;
+      const epoch = ++generation;
+      clearPrivateView();
+      await acceptSession(session, epoch, 'SIGNED_IN');
+      if (epoch !== generation || user?.id !== session.user.id) {
+        status(form, 'Could not verify your account. Please try signing in.', true);
+        return;
+      }
+      status(form, 'Email confirmed.');
+      window.go('member');
+    });
     submit('recoveryForm', async form => {
-      const result = await client.auth.resetPasswordForEmail(byId('recoveryEmail').value.trim(), {
+      const result = await authRequest(() => client.auth.resetPasswordForEmail(byId('recoveryEmail').value.trim(), {
         redirectTo: recoveryUrl
-      });
+      }));
+      if (!result) return;
       if (result.error) {
         showAuthError(result.error, form, 'A reset email could not be requested. Please try again later.');
         return;
       }
-      status(form, 'If an account exists for this address, a recovery email will arrive. Enter its code on any device, or open its link in this browser.');
+      status(form, 'If an account exists for this address, a recovery email will arrive. If it includes a code, enter it on any device. Open email links in this browser.');
     });
-    // Six-digit recovery codes are verified by Supabase, never by client logic.
+    // Email recovery codes are verified by Supabase, never by client logic.
     // Requires the Supabase Recovery email template to include {{ .Token }}.
     submit('otpRecoveryForm', async form => {
       const email = byId('recoveryEmail').value.trim();
       const token = byId('recoveryCode').value.trim();
-      if (!email || !/^[0-9]{6}$/.test(token)) {
-        status(form, 'Enter your account email above and the six-digit code from your recovery email.', true);
+      if (!email || !byId('recoveryEmail').validity.valid || !/^[0-9]{6,10}$/.test(token)) {
+        status(form, 'Enter your account email above and the code from your recovery email.', true);
         return;
       }
-      const result = await client.auth.verifyOtp({ email, token, type: 'recovery' });
+      const result = await authRequest(() => client.auth.verifyOtp({ email, token, type: 'recovery' }));
       byId('recoveryCode').value = '';
+      if (!result) return;
       if (result.error) {
         if (result.error.code === 'otp_expired') {
           status(form, 'That code is invalid or expired. Request a new recovery email.', true);
@@ -557,9 +675,10 @@ async function startAccounts({ url, key }) {
         return;
       }
       const owner = user.id;
-      const result = await client.auth.updateUser({ password });
+      const result = await authRequest(() => client.auth.updateUser({ password }));
       byId('newPassword').value = '';
       byId('confirmNewPassword').value = '';
+      if (!result) return;
       if (result.error) {
         showAuthError(result.error, form, 'The password could not be updated. Request a new reset link and try again.');
         return;
@@ -594,6 +713,7 @@ async function startAccounts({ url, key }) {
     byId('signOut').onclick = async () => {
       if (signingOut) return;
       signingOut = true;
+      ++authIntent;
       recovery = false;
       recoveryUserId = null;
       ++generation;
@@ -601,15 +721,27 @@ async function startAccounts({ url, key }) {
       restoreGuest();
       window.go('sign-in');
       status(byId('signInForm'), 'Signing out…');
+      for (const id of authFormIds) {
+        byId(id).querySelectorAll('input, button[type="submit"]').forEach(node => { node.disabled = true; });
+      }
       try {
-        const { error } = await client.auth.signOut({ scope: 'local' });
-        status(byId('signInForm'), error
+        // Clear the current local session immediately. A pending verification
+        // may subsequently write a new SDK session, so clear again after it.
+        const initialLogout = client.auth.signOut({ scope: 'local' });
+        const pending = [...authRequests];
+        const results = await Promise.allSettled([initialLogout, ...pending]);
+        const finalLogout = await client.auth.signOut({ scope: 'local' });
+        const revokeError = results[0].status === 'rejected' || results[0].value?.error || finalLogout.error;
+        status(byId('signInForm'), revokeError
           ? 'Signed out on this device. The server could not confirm session revocation; please check your connection.'
           : 'You are signed out on this device.');
       } catch {
         status(byId('signInForm'), 'Sign-out could not be completed. Keep this device private and try again.', true);
       } finally {
+        clearPrivateView();
+        restoreGuest();
         signingOut = false;
+        enablePublicForms();
       }
     };
   }
@@ -624,7 +756,7 @@ async function startAccounts({ url, key }) {
       ['createAccountPanel', 'createAccountForm',
         '<label for="createName">Display name</label><input id="createName" class="field" autocomplete="nickname" minlength="1" maxlength="40" required disabled>' +
         '<label for="createEmail">Email address</label><input id="createEmail" class="field" type="email" autocomplete="username" maxlength="254" required disabled>' +
-        '<label for="createPassword">Password</label><input id="createPassword" class="field" type="password" autocomplete="new-password" minlength="12" maxlength="128" required aria-describedby="passwordHelp" disabled><p id="passwordHelp" class="tiny">Use at least 12 characters. Confirmation links should be opened in this browser.</p>',
+        '<label for="createPassword">Password</label><input id="createPassword" class="field" type="password" autocomplete="new-password" minlength="12" maxlength="128" required aria-describedby="passwordHelp" disabled><p id="passwordHelp" class="tiny">Use at least 12 characters. Enter email codes on any device, or open confirmation links in this browser.</p>',
         'Create Account', 'Create an account for a private collection and watchlist. Community posts are still a local demonstration.'],
       ['forgotPasswordPanel', 'recoveryForm',
         '<label for="recoveryEmail">Email address</label><input id="recoveryEmail" class="field" type="email" autocomplete="email" maxlength="254" required disabled>',
@@ -640,11 +772,19 @@ async function startAccounts({ url, key }) {
         '</button><p class="account-status tiny" role="status" aria-live="polite"></p>';
       panel.querySelector('.phase-account-links').before(form);
     });
-    // This optional code form does not replace the existing reset-link flow.
+    byId('createAccountForm').insertAdjacentHTML('afterend',
+      '<details id="confirmEmailDetails"><summary>Already have a confirmation code?</summary>' +
+      '<form id="confirmEmailForm"><label for="confirmEmailAddress">Confirmation email address</label>' +
+      '<input id="confirmEmailAddress" class="field" type="email" autocomplete="email" maxlength="254" required disabled>' +
+      '<label for="confirmEmailCode">Confirmation code</label>' +
+      '<input id="confirmEmailCode" class="field" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" minlength="6" maxlength="10" required disabled>' +
+      '<button class="btn secondary" type="submit" disabled>Verify email</button>' +
+      '<p class="account-status tiny" role="status" aria-live="polite"></p></form></details>');
+    // Codes also work when an email opens in a different browser or device.
     byId('recoveryForm').insertAdjacentHTML('afterend',
-      '<form id="otpRecoveryForm"><p class="tiny">If your recovery email includes a six-digit code, enter it here. You can use the code on another device.</p>' +
-      '<label for="recoveryCode">Six-digit email code</label>' +
-      '<input id="recoveryCode" class="field" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="recoveryCodeHelp" disabled>' +
+      '<form id="otpRecoveryForm"><p class="tiny">If your recovery email includes a code, enter it here. You can use the code on another device.</p>' +
+      '<label for="recoveryCode">Recovery email code</label>' +
+      '<input id="recoveryCode" class="field" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" minlength="6" maxlength="10" required aria-describedby="recoveryCodeHelp" disabled>' +
       '<p id="recoveryCodeHelp" class="tiny">Use the email address entered above. Codes expire and can only be used once.</p>' +
       '<button class="btn secondary" type="submit" disabled>Verify code</button>' +
       '<p class="account-status tiny" role="status" aria-live="polite"></p></form>');
