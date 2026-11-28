@@ -5,6 +5,12 @@
     "test": "playwright test",
     "test:a11y": "playwright test --grep @a11y",
     "build:accounts": "node scripts/build-accounts.mjs",
+    "build:staging": "node scripts/build-staging.mjs",
+    "check:deploy": "node scripts/verify-deploy.mjs coinxchange visual",
+    "check:staging": "node scripts/verify-deploy.mjs dist/staging staging",
+    "test:deploy": "playwright test --config=playwright.deploy.config.js",
+    "test:photos": "node --test scripts/test-photo-client.mjs && node scripts/test-photo-storage.mjs",
+    "test:founder": "node scripts/test-founder-counts.mjs",
     "test:accounts": "playwright test tests/accounts.spec.js",
     "test:database": "node scripts/test-database.mjs"
   },

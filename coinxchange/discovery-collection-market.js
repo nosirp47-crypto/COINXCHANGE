@@ -5,6 +5,11 @@ const marketTypes = [...new Set(catalog.map(coin => coin.type))];
 let marketFilter = 'all';
 let marketCategory = 'all';
 let previewUrl = null;
+let photoDataUrl = null;
+let photoVersion = 0;
+let photoPreparing = false;
+let photoSaving = false;
+const maxPhotoBytes = 500 * 1024;
 
 const enhancementStyles = document.createElement('style');
 enhancementStyles.textContent = `
@@ -170,38 +175,175 @@ photoStatus.id = 'photoStatus';
 photoStatus.setAttribute('role', 'status');
 photoStatus.setAttribute('aria-live', 'polite');
 photoPreview.after(photoStatus);
+photoInput.closest('.upload').querySelector('p').textContent =
+  'Preview your photo, then save it with a description. No automatic coin identification.';
+document.querySelector('label[for="photo"]').textContent = 'Select your coin photo';
 
-photoInput.onchange = event => {
+// The preview is a bounded JPEG that can be saved, not a temporary file URL.
+// Re-encoding also removes the original photo's location/EXIF metadata.
+photoInput.accept = 'image/jpeg,image/png,image/webp';
+photoInput.onchange = async event => {
+  const version = ++photoVersion;
   const file = event.target.files[0];
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
+  photoDataUrl = null;
+  photoPreparing = false;
   photoPreview.removeAttribute('src');
   photoPreview.style.display = 'none';
   photoStatus.textContent = '';
-
+  const saveStatus = document.getElementById('photoSaveStatus');
+  if (saveStatus) saveStatus.textContent = '';
   if (!file) return;
-  if (!file.type.startsWith('image/')) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
     photoInput.value = '';
-    photoStatus.textContent = 'Choose an image file to preview.';
+    photoStatus.textContent = 'Choose a JPEG, PNG, or WebP photo. Export HEIC photos as JPEG first.';
     return;
   }
   if (file.size > 10 * 1024 * 1024) {
     photoInput.value = '';
-    photoStatus.textContent = 'Choose an image smaller than 10 MB.';
+    photoStatus.textContent = 'Choose a photo smaller than 10 MB.';
     return;
   }
-
-  previewUrl = URL.createObjectURL(file);
-  photoPreview.onload = () => {
+  photoPreparing = true;
+  photoStatus.textContent = 'Preparing your coin photo…';
+  const objectUrl = URL.createObjectURL(file);
+  previewUrl = objectUrl;
+  try {
+    const decoded = new Image();
+    await new Promise((resolve, reject) => {
+      decoded.onload = resolve;
+      decoded.onerror = reject;
+      decoded.src = objectUrl;
+    });
+    if (version !== photoVersion) return;
+    if (!decoded.naturalWidth || !decoded.naturalHeight) throw new Error('Invalid photo');
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 1024 / Math.max(decoded.naturalWidth, decoded.naturalHeight));
+    canvas.width = Math.max(1, Math.round(decoded.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(decoded.naturalHeight * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Image processing unavailable');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(decoded, 0, 0, canvas.width, canvas.height);
+    let encoded;
+    for (const quality of [0.84, 0.72, 0.58, 0.42]) {
+      encoded = canvas.toDataURL('image/jpeg', quality);
+      if ((encoded.length - 23) * 3 / 4 <= maxPhotoBytes) break;
+    }
+    if (!encoded?.startsWith('data:image/jpeg;base64,') ||
+        (encoded.length - 23) * 3 / 4 > maxPhotoBytes) throw new Error('Photo too large');
+    photoDataUrl = encoded;
+    photoPreview.src = encoded;
     photoPreview.style.display = 'block';
-    photoStatus.textContent = 'Preview shown locally. This image is not analyzed or uploaded.';
-  };
-  photoPreview.onerror = () => {
-    photoPreview.style.display = 'none';
-    photoStatus.textContent = 'This image could not be previewed. Try another file.';
-  };
-  photoPreview.src = previewUrl;
+    photoStatus.textContent = 'Photo ready. Add a description and save it to your collection.';
+  } catch {
+    if (version !== photoVersion) return;
+    photoInput.value = '';
+    photoStatus.textContent = 'This photo could not be prepared. Try a smaller JPEG or PNG photo.';
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+    if (version === photoVersion) { previewUrl = null; photoPreparing = false; }
+  }
 };
+
+function clearSavedPhoto() {
+  ++photoVersion;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = null;
+  photoInput.value = '';
+  photoDataUrl = null;
+  photoPreparing = false;
+  photoPreview.removeAttribute('src');
+  photoPreview.style.display = 'none';
+  photoStatus.textContent = '';
+}
+
+window.coinxchangeClearPhotoDraft = () => {
+  clearSavedPhoto();
+  for (const id of ['photoCoinName', 'customCoinName']) {
+    const input = document.getElementById(id);
+    if (input) input.value = '';
+  }
+  for (const id of ['photoSaveStatus', 'customCoinStatus']) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = '';
+  }
+};
+
+async function saveDescribedCoin(coin, { requirePhoto = false } = {}) {
+  if (photoPreparing || photoSaving) {
+    toast('Please wait while your photo is prepared or saved.');
+    return false;
+  }
+  if (requirePhoto && !photoDataUrl) {
+    toast('Choose a coin photo before saving.');
+    return false;
+  }
+  photoSaving = true;
+  const savedVersion = photoVersion;
+  const snapshot = photoDataUrl;
+  try {
+    if (window.coinxchangeAccounts?.configured) {
+      const saved = await window.coinxchangeAccounts.addCoin({ ...coin, photoDataUrl: snapshot });
+      if (saved && snapshot && savedVersion === photoVersion) clearSavedPhoto();
+      return saved;
+    }
+    const entry = { name: coin.name, notes: coin.notes };
+    if (coin.referenceId) entry.referenceId = coin.referenceId;
+    if (snapshot) entry.photoDataUrl = snapshot;
+    const next = [entry, ...collection];
+    if (!save('cx_collection', next)) return false;
+    collection = next;
+    renderCollection();
+    if (snapshot && savedVersion === photoVersion) clearSavedPhoto();
+    toast(snapshot ? 'Coin and photo saved on this device.' : 'Saved to your local vault.');
+    return true;
+  } finally { photoSaving = false; }
+}
+
+// Extend the established renderer so account edit/remove behavior stays intact.
+const renderCollectionWithoutPhotos = window.renderCollection;
+window.renderCollection = function () {
+  renderCollectionWithoutPhotos();
+  document.querySelectorAll('#collectionList .item').forEach((row, index) => {
+    const item = collection[index];
+    if (!item) return;
+    let source = null;
+    if (typeof item.photoDataUrl === 'string' && item.photoDataUrl.length <= 700000 &&
+        /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(item.photoDataUrl)) {
+      source = item.photoDataUrl;
+    } else if (typeof item.photoUrl === 'string' && item.photoUrl.startsWith('blob:' + location.origin + '/')) {
+      source = item.photoUrl;
+    }
+    const icon = row.querySelector('.coin');
+    if (source) {
+      const img = document.createElement('img');
+      img.className = 'saved-coin-photo';
+      img.src = source;
+      img.alt = 'Your photo of ' + item.name;
+      img.width = 76;
+      img.height = 76;
+      img.onerror = () => {
+        icon.textContent = 'Photo unavailable';
+        icon.classList.add('photo-unavailable');
+      };
+      icon.replaceChildren(img);
+      icon.classList.add('coin-with-photo');
+    } else if (item.photoUnavailable || item.photo_path || item.photoDataUrl) {
+      icon.textContent = 'Photo unavailable';
+      icon.classList.add('photo-unavailable');
+    }
+  });
+};
+const photoStyles = document.createElement('style');
+photoStyles.textContent = '#collectionList .coin-with-photo{width:76px;height:76px;min-width:76px;border-radius:12px;overflow:hidden;background:var(--panel2)}' +
+  '.saved-coin-photo{display:block;width:76px;height:76px;object-fit:contain}' +
+  '#collectionList .photo-unavailable{font:11px/1.3 system-ui;width:76px;min-width:76px;text-align:center;color:var(--muted);border-radius:12px}' +
+  '#collectionList .item{flex-wrap:wrap}#collectionList .item>div:nth-child(2){min-width:100px;overflow-wrap:anywhere}';
+document.head.append(photoStyles);
+renderCollection();
 
 const reportDetails = document.getElementById('reportDetails');
 const checklist = document.createElement('div');
@@ -227,26 +369,14 @@ document.getElementById('identify').onclick = () => {
   reportDetails.textContent = chosen.details;
 };
 
-document.getElementById('saveDiscovered').onclick = () => {
+document.getElementById('saveDiscovered').onclick = async () => {
   if (!chosen) return;
-  if (window.coinxchangeAccounts?.configured) {
-    void window.coinxchangeAccounts.addCoin({
-      name: chosen.name,
-      notes: 'Added from the discovery guide; identification unverified. ' + chosen.details,
-      referenceId: chosen.id
-    });
-    return;
-  }
-  const nextCollection = [{
+  await saveDescribedCoin({
     name: chosen.name,
-    notes: `Added from the discovery guide · identification unverified. ${chosen.details}`
-  }, ...collection];
-  if (!save('cx_collection', nextCollection)) return;
-  collection = nextCollection;
-  renderCollection();
-  toast('Saved to your local vault');
+    notes: 'Added from the discovery guide; identification unverified. ' + chosen.details,
+    referenceId: chosen.id
+  });
 };
-
 
 /* Founder Edition beta enhancements: free-text research, a clear save path,
    native sharing, and a neutral advertising placement. No third-party scripts. */
@@ -291,54 +421,48 @@ document.getElementById('researchCoin').addEventListener('click', () => {
 document.getElementById('saveCustomCoin').addEventListener('click', async () => {
   const name = customName.value.trim();
   if (!name) { customStatus.textContent = 'Enter a coin name before saving.'; return; }
-  if (window.coinxchangeAccounts?.configured) {
-    const saved = await window.coinxchangeAccounts.addCoin({
-      name, notes: 'User-entered coin; identity and condition not verified.'
-    });
-    if (saved) { customStatus.textContent = 'Saved to your account vault.'; go('collection'); }
-    else customStatus.textContent = 'Not saved. Sign in and ensure your account storage is available.';
-    return;
-  }
-  const next = [{ name, notes: 'User-entered coin; identification not verified.' }, ...collection];
-  if (!save('cx_collection', next)) { customStatus.textContent = 'Could not save on this device.'; return; }
-  collection = next;
-  renderCollection();
-  customStatus.textContent = 'Saved locally to My Coin Collection.';
-  go('collection');
+  const saved = await saveDescribedCoin({
+    name, notes: 'User-entered coin; identity and condition not verified.'
+  });
+  if (saved) {
+    customStatus.textContent = window.coinxchangeAccounts?.configured
+      ? 'Saved to your account vault.' : 'Saved on this device.';
+    go('collection');
+  } else customStatus.textContent = 'Not saved. Check the message and try again.';
 });
 
-// An image preview is not a cloud upload. Offer an explicit path to save its
-// description rather than implying the image itself has been stored.
 const imageSaveHelp = document.createElement('div');
 imageSaveHelp.className = 'coin-photo-save';
 imageSaveHelp.innerHTML = `
   <h3>Save the coin you photographed</h3>
   <label for="photoCoinName">Coin name or description</label>
   <input id="photoCoinName" class="field" maxlength="160" placeholder="e.g. 1979-D Lincoln cent">
-  <button id="savePhotoDescription" class="btn secondary" type="button">Save coin details to My Collection</button>
+  <button id="savePhotoDescription" class="btn secondary" type="button">Save coin and photo to My Collection</button>
   <p id="photoSaveStatus" class="tiny" role="status" aria-live="polite"></p>
-  <p class="tiny">This saves the coin description, not the photograph.
-  Permanent photo uploads are not enabled yet.</p>
+  <p class="tiny">Your photo is resized for your collection. Account photos are private;
+  guest photos stay in this browser. Keep your original for close-up inspection.</p>
 `;
 photoInput.closest('.upload').after(imageSaveHelp);
 document.getElementById('savePhotoDescription').addEventListener('click', async () => {
   const name = document.getElementById('photoCoinName').value.trim();
   const state = document.getElementById('photoSaveStatus');
+  const button = document.getElementById('savePhotoDescription');
   if (!name) { state.textContent = 'Enter a coin description to save.'; return; }
-  const notes = 'Added from photo-preview screen. Photo not uploaded; identity unverified.';
-  if (window.coinxchangeAccounts?.configured) {
-    const saved = await window.coinxchangeAccounts.addCoin({ name, notes });
-    if (saved) { state.textContent = 'Saved to your account collection.'; go('collection'); }
-    else state.textContent = 'Not saved. Sign in and check account storage.';
-    return;
-  }
-  if (!save('cx_collection', [{ name, notes }, ...collection])) {
-    state.textContent = 'Could not save on this device.'; return;
-  }
-  collection = [{ name, notes }, ...collection];
-  renderCollection();
-  state.textContent = 'Saved locally.';
-  go('collection');
+  if (photoPreparing) { state.textContent = 'Please wait for your photo to finish preparing.'; return; }
+  if (!photoDataUrl) { state.textContent = 'Choose a coin photo before saving.'; return; }
+  button.disabled = true;
+  state.textContent = 'Saving your coin and photo…';
+  try {
+    const saved = await saveDescribedCoin({
+      name, notes: 'Saved with your coin photo. Identity and condition unverified.'
+    }, { requirePhoto: true });
+    if (saved) {
+      state.textContent = window.coinxchangeAccounts?.configured
+        ? 'Coin and photo saved to your private account collection.'
+        : 'Coin and photo saved on this device.';
+      go('collection');
+    } else state.textContent = 'Could not confirm the save. Check account access or browser storage and retry.';
+  } finally { button.disabled = false; }
 });
 
 async function shareCoinxchange(title, text) {
@@ -347,7 +471,7 @@ async function shareCoinxchange(title, text) {
     try { await navigator.share({ title, text, url }); return; }
     catch (error) { if (error?.name === 'AbortError') return; }
   }
-  const message = title + '\\n' + text + '\\n' + url;
+  const message = title + '\n' + text + '\n' + url;
   try {
     await navigator.clipboard.writeText(message);
     toast('Share text copied. Paste it where you like.');

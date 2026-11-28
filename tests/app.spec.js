@@ -197,7 +197,7 @@ await page.goto(appPath);
         await page.getByRole('button', { name: 'Explore Coins', exact: true }).click();
       }
       await page.getByRole('navigation').getByRole('button', { name: 'My Collection' }).click();
-      await page.getByLabel('Coin name').fill('Attempted write');
+      await page.getByLabel('Coin name', { exact: true }).fill('Attempted write');
       await page.getByRole('button', { name: 'Add to My Vault' }).click();
 
       await expect(page.locator('#toast')).toContainText('Existing data was not overwritten');
@@ -221,7 +221,7 @@ await page.goto(appPath);
         await page.getByRole('button', { name: 'Explore Coins', exact: true }).click();
       }
       await page.getByRole('navigation').getByRole('button', { name: 'My Collection' }).click();
-      await page.getByLabel('Coin name').fill('Unsaved coin');
+      await page.getByLabel('Coin name', { exact: true }).fill('Unsaved coin');
       await page.getByRole('button', { name: 'Add to My Vault' }).click();
 
       await expect(page.locator('#toast')).toContainText('Could not save collection data');

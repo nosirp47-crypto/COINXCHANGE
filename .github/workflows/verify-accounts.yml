@@ -2,11 +2,16 @@ name: Verify accounts and existing website
 
 on:
   push:
-    branches: [phase3/accounts-db]
+    branches: [main, 'phase3/**', 'preview/**', staging-accounts-recovery, 'fix/**']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -23,15 +28,41 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
       - name: Verify reproducible browser bundle
+        id: bundle
         run: |
           npm run build:accounts
           git diff --exit-code -- coinxchange/vendor
+      - name: Check the actual Cloudflare publish directory
+        id: publish_directory
+        run: npm run check:deploy
       - name: Check database ownership and permissions
+        id: database
         run: npm run test:database
+      - name: Check private photo paths and storage ownership
+        id: photos
+        run: npm run test:photos
+      - name: Check founder-only member counts
+        id: founder
+        run: npm run test:founder
       - name: Install test browsers
         run: npx playwright install --with-deps chromium webkit
       - name: Test accounts and guest website
+        id: browser
         run: npm test -- --workers=2 --reporter=list,html
+      - name: Test the app served at the Cloudflare root
+        id: deployment_root
+        run: npm run test:deploy -- --workers=2 --reporter=list
+      - name: Record exactly what was verified
+        if: always()
+        env:
+          BUNDLE_RESULT: ${{ steps.bundle.outcome }}
+          PUBLISH_DIRECTORY_RESULT: ${{ steps.publish_directory.outcome }}
+          DATABASE_RESULT: ${{ steps.database.outcome }}
+          PHOTOS_RESULT: ${{ steps.photos.outcome }}
+          FOUNDER_RESULT: ${{ steps.founder.outcome }}
+          BROWSER_RESULT: ${{ steps.browser.outcome }}
+          DEPLOYMENT_ROOT_RESULT: ${{ steps.deployment_root.outcome }}
+        run: node scripts/write-verification-summary.mjs
       - name: Save test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -40,5 +71,6 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            verification-summary.md
           if-no-files-found: ignore
           retention-days: 7

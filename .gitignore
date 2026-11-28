@@ -6,3 +6,6 @@ blob-report/
 .env.*
 !.env.example
 /COINXCHANGE-phase3-accounts.bundle
+/dist/
+/verification-summary.md
+/supabase/.temp/
